@@ -1,41 +1,45 @@
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import Session
+from attrs import define
 from pydantic import BaseModel
 
+from .database import Base
 
 
-class Flower(BaseModel):
+class Flower(Base):
+    __tablename__ = "flowers"
+
+    name = Column(String, index = True)
+    count = Column(Integer)
+    cost = Column(Integer)
+    id = Column( Integer, primary_key=True, index=True)
+
+class FlowerCreate(BaseModel):
     name: str
     count: int
     cost: int
-    id: int = 0
 
 class FlowersRepository:
-    flowers: list[Flower]
-
-    def __init__(self):
-        self.flowers = []
+    def get_by_id(self, db: Session, flower_id: int):
+        return db.query(Flower).filter(Flower.id == flower_id).first()
 
 
-    def get_all(self)-> list[Flower]:
-        return self.flowers
+    def get_all(self, db: Session, skip: int = 0, limit: int = 100):
+        return db.query(Flower).offset(skip).limit(limit).all()
 
-    def get_by_name(self, name):
-        for flower in self.flowers:
-            if name == flower.name:
-                return flower
-        return None
 
-    def get_by_id(self, id):
-        for flower in self.flowers:
-            if id == flower.id:
-                return flower
-        return None
+    def save(self, db: Session, flower: FlowerCreate):
+        db_flower = Flower(name=flower.name, count=flower.count,cost=flower.cost)
 
-    def save(self, flower):
-        flower.id = self.get_next_id()
-        self.flowers.append(flower)
-        return flower
+        db.add(db_flower)
+        db.commit()
+        db.refresh(db_flower)
+        return db_flower
 
-    def get_next_id(self):
-        return len(self.flowers) + 1
+
+    def get_by_name(self, db: Session, name: str):
+        return db.query(Flower).filter(Flower.name == name).first()
+
+
 
 

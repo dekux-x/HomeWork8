@@ -1,33 +1,43 @@
 import json
 
-from fastapi import Cookie, FastAPI, Form, Request, Response, Depends
-from fastapi.responses import RedirectResponse
+from fastapi import Cookie, FastAPI, Form, Response, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
 from jose import jwt
 
-from .flowers_repository import Flower, FlowersRepository
-from .purchases_repository import Purchase, PurchasesRepository
-from .users_repository import User, UsersRepository, GetUser
+from .flowers_repository import Flower, FlowersRepository, FlowerCreate
+from .purchases_repository import PurchaseCreate, PurchasesRepository
+from .users_repository import User, UsersRepository, GetUser, UserCreate
+from .database import Base, engine, SessionLocal
+
 
 app = FastAPI()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-
 flowers_repository = FlowersRepository()
 purchases_repository = PurchasesRepository()
 users_repository = UsersRepository()
 
+Base.metadata.create_all(bind=engine)
 
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 @app.post("/signup/")
 def post_sign_ap(
-        user: User
+        user: UserCreate,
+        db: Session = Depends(get_db)
         ):
-    if users_repository.get_by_email( user.email):
-        return "There is already exist such user"
-    users_repository.save(user)
-    return "OK"
+    db_user = users_repository.get_by_email(db, user.email)
+    if  db_user:
+        raise HTTPException( status_code= 404, detail="User already exist")
+    users_repository.save(db, user)
+    return db_user
 
 def encode_jwt(user_id: str):
     body = {"user_id": user_id}
@@ -41,40 +51,43 @@ def decode_jwt(token: str):
 @app.post("/login")
 def post_login(
         username: str = Form(),
-        password: str = Form()
+        password: str = Form(),
+        db: Session = Depends(get_db)
 ):
-    user = users_repository.get_by_name(username)
+    user = users_repository.get_by_name(db, username)
     if user.password == password:
             token = encode_jwt(user.id)
             return {"access_token": token, "type": "bearer"}
-    return Response("There is no such user", status_code=404)
+    raise HTTPException(status_code=404, detail="There is no such user")
 
 @app.get("/profile", response_model= GetUser)
-def profile(token: str = Depends(oauth2_scheme)):
+def profile(token: str = Depends(oauth2_scheme),
+            db: Session = Depends(get_db)):
     user_id = decode_jwt(token)
-    user = users_repository.get_by_id(user_id)
+    user = users_repository.get_by_id(db, user_id)
     if user:
         return user
-    return Response("There is problems with cookie", status_code=404)
+    raise HTTPException(status_code=404, detail="There is no such user")
 
 @app.get("/flowers")
-def get_flowers( ):
-    flowers = flowers_repository.get_all()
+def get_flowers(db: Session = Depends(get_db)):
+    flowers = flowers_repository.get_all(db)
     return flowers
 
 @app.post("/flowers")
-def post_flowers(flower: Flower):
-    flowers_repository.save(flower)
-    return flowers_repository.get_by_name(flower.name).id
+def post_flowers(flower: FlowerCreate, db: Session = Depends(get_db)):
+    flowers_repository.save(db, flower)
+    return flowers_repository.get_by_name(db, flower.name).id
 
 
 
 @app.get("/cart/items")
-def cart_items( cart: str = Cookie(default="[]")):
+def cart_items( cart: str = Cookie(default="[]"),
+                db: Session = Depends(get_db)):
     cart_json = json.loads(cart)
     flowers = []
     for i in cart_json:
-        flowers.append(flowers_repository.get_by_id(i["id"]))
+        flowers.append(flowers_repository.get_by_id(db, i["id"]))
     total = 0
     flowers_to_show = []
     for i in flowers:
@@ -85,8 +98,8 @@ def cart_items( cart: str = Cookie(default="[]")):
 
 
 @app.post("/cart/items")
-def post_cart_items(response: Response, flower_id: int, cart = Cookie(default="[]")):
-    flower = flowers_repository.get_by_id(flower_id)
+def post_cart_items(response: Response, flower_id: int, cart = Cookie(default="[]"), db: Session = Depends(get_db)):
+    flower = flowers_repository.get_by_id(db, flower_id)
     cart_json = json.loads(cart)
     if flower:
         data = {"id": flower.id}
@@ -97,21 +110,21 @@ def post_cart_items(response: Response, flower_id: int, cart = Cookie(default="[
     return response
 
 @app.get("/purchased")
-def get_purchase( token: str = Depends(oauth2_scheme)):
+def get_purchase(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     user_id = decode_jwt(token)
-    purchases = purchases_repository.get_all_by_id(user_id)
+    purchases = purchases_repository.get_all_by_id(db, user_id)
     flowers = []
     for purchase in purchases:
-        flower = flowers_repository.get_by_id(purchase.flower_id)
+        flower = flowers_repository.get_by_id(db, purchase.flower_id)
         if flower:
             flowers.append({"id": flower.id, "name": flower.name})
     return flowers
 
 @app.post("/purchased")
-def post_purchase(cart: str = Cookie(default="[]"), token: str = Depends(oauth2_scheme)):
+def post_purchase(cart: str = Cookie(default="[]"), token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     user_id = decode_jwt(token)
     cart_json = json.loads(cart)
     for i in cart_json:
-        purchase = Purchase(user_id, i["id"])
-        purchases_repository.save(purchase)
+        purchase = PurchaseCreate(user_id, i["id"])
+        purchases_repository.save(db, purchase)
     return "Ok"
